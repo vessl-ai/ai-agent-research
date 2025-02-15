@@ -1,0 +1,5 @@
+crewai
+crewai-tools
+langfuse
+python-dotenv
+openlit
