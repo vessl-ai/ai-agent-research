@@ -1,6 +1,6 @@
 from crewai import Agent, Task, Crew, Process
 from crewai_tools import PDFSearchTool, SerperDevTool
-import os
+from crewai.knowledge.source.crew_docling_source import CrewDoclingSource
 from dotenv import load_dotenv
 import time
 from datetime import datetime
@@ -8,9 +8,9 @@ from datetime import datetime
 # Load environment variables
 load_dotenv()
 
-def create_agents():
+def create_agents_with_pdfsearch():
     # Initialize the tools
-    pdf_tool = PDFSearchTool(pdf="pdfs/costco_10k.pdf")
+    pdf_tool = PDFSearchTool(pdf="knowledge/costco_10k.pdf")
     search_tool = SerperDevTool()
     
     # Create a researcher agent with both tools
@@ -22,17 +22,48 @@ def create_agents():
         both internal documents and online sources to gather comprehensive information.""",
         verbose=True,
         allow_delegation=True,
-        tools=[pdf_tool, search_tool],
+        tools=[pdf_tool, search_tool]
     )
 
-    # Create a writer agent
     writer = Agent(
         role='Content Writer',
         goal='Synthesize information and create comprehensive responses',
         backstory="""You are a skilled writer who excels at organizing information 
         and creating clear, concise summaries.""",
         verbose=True,
+        allow_delegation=True
+    )
+
+    return researcher, writer
+
+def create_agents_with_docling():
+    search_tool = SerperDevTool()
+    
+    # Create knowledge source using CrewDoclingSource
+    content_source = CrewDoclingSource(
+        file_paths=["costco_10k.pdf"],
+    )
+    
+    # Create a researcher agent with knowledge source
+    researcher = Agent(
+        role='Research Analyst',
+        goal='Search through PDF documents and online sources to extract relevant information',
+        backstory="""You are an expert research analyst with years of experience in 
+        analyzing documents and extracting key information. You can effectively search
+        both internal documents and online sources to gather comprehensive information.""",
+        verbose=True,
         allow_delegation=True,
+        tools=[search_tool],
+        knowledge_sources=[content_source]
+    )
+
+    writer = Agent(
+        role='Content Writer',
+        goal='Synthesize information and create comprehensive responses',
+        backstory="""You are a skilled writer who excels at organizing information 
+        and creating clear, concise summaries.""",
+        verbose=True,
+        allow_delegation=True
     )
 
     return researcher, writer
@@ -73,15 +104,14 @@ def create_tasks(researcher, writer, user_query):
 
     return [research_task, writing_task]
 
-def main():
-    # Start timing
+def run_research(method, user_query):
     start_time = time.time()
     
-    # Create agents
-    researcher, writer = create_agents()
-    
-    # Example user query
-    user_query = "Compare the revenue growth of Costco and Walmart"
+    # Create agents based on method
+    if method == "pdfsearch":
+        researcher, writer = create_agents_with_pdfsearch()
+    else:
+        researcher, writer = create_agents_with_docling()
     
     # Create tasks
     tasks = create_tasks(researcher, writer, user_query)
@@ -100,25 +130,40 @@ def main():
     # Calculate duration
     duration = time.time() - start_time
     
-    # Format the output with timestamp and duration
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_content = f"""
+Research Method: {method}
 Research Query: {user_query}
 Timestamp: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
 Duration: {duration:.2f} seconds
 
 Results:
 {result}
-""" 
-    # Save to file
-    filename = f"research_result_{timestamp}.txt"
+"""
+    
+    filename = f"research_result_{method}_{timestamp}.txt"
     with open(filename, 'w', encoding='utf-8') as f:
         f.write(output_content)
     
-    print(f"Research completed in {duration:.2f} seconds")
-    print(f"Results saved to: {filename}")
-    print("\nResults:")
-    print(result)
+    return duration, filename, result
+
+def main():
+    user_query = "Compare the revenue growth of Costco and Walmart"
+    
+    # Run with PDFSearchTool
+    print("\nRunning with PDFSearchTool...")
+    pdf_duration, pdf_file, pdf_result = run_research("pdfsearch", user_query)
+    
+    # Run with CrewDoclingSource
+    print("\nRunning with CrewDoclingSource...")
+    docling_duration, docling_file, docling_result = run_research("docling", user_query)
+    
+    # Print comparison
+    print("\nPerformance Comparison:")
+    print(f"PDFSearchTool Duration: {pdf_duration:.2f} seconds")
+    print(f"Results saved to: {pdf_file}")
+    print(f"\nCrewDoclingSource Duration: {docling_duration:.2f} seconds")
+    print(f"Results saved to: {docling_file}")
 
 if __name__ == "__main__":
     main()
