@@ -1,0 +1,7 @@
+crewai
+crewai-tools
+python-dotenv
+plotly
+pandas
+llama-index
+llama-index-tools-yahoo-finance 

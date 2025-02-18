@@ -14,4 +14,7 @@ Implements and compares two different Retrieval-Augmented Generation approaches 
 
 The system combines document analysis with web search capabilities to perform comprehensive research and generate detailed reports. It includes performance comparisons between the two RAG approaches.
 
+### [Code Agent](./code-agent)
+An AI-powered agent system designed to analyze code and generate detailed reports. The system can process source code, perform technical analysis, and produce comprehensive HTML reports with insights about the codebase.
+
 ## More Coming Soon...
