@@ -1,0 +1,36 @@
+[project]
+name = "crewai-deepresearch"
+version = "0.1.0"
+description = "Deep Research agent using CrewAI with human-in-the-loop feedback"
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+dependencies = [
+    "crewai",
+    "crewai[tools]",
+    "qdrant-client",
+    "python-dotenv",
+    "langchain",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "firecrawl-py",
+]
+requires-python = ">=3.11"
+
+[tool.rye]
+managed = true
+dev-dependencies = [
+    "black",
+    "isort",
+    "pytest",
+]
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+multi_line_output = 3

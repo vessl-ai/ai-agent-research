@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deep Research Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+            display: flex;
+            gap: 20px;
+        }
+        .main-container {
+            flex: 1;
+            min-width: 0;
+        }
+        .process-container {
+            width: 400px;
+            background-color: #1e1e1e;
+            color: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            height: calc(100vh - 40px);
+            overflow-y: auto;
+            position: sticky;
+            top: 20px;
+        }
+        #chat-container {
+            background-color: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        #chat-messages {
+            height: 400px;
+            overflow-y: auto;
+            margin-bottom: 20px;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        .message {
+            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .user-message {
+            background-color: #e3f2fd;
+            margin-left: 20%;
+        }
+        .agent-message {
+            background-color: #f5f5f5;
+            margin-right: 20%;
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        .input-field {
+            flex-grow: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            background-color: #2196f3;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #1976d2;
+        }
+        .process-log {
+            font-family: monospace;
+            white-space: pre-wrap;
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #2d2d2d;
+            border-radius: 5px;
+        }
+        .process-log.agent-action {
+            border-left: 3px solid #4caf50;
+        }
+        .process-log.task-action {
+            border-left: 3px solid #2196f3;
+        }
+        .process-title {
+            color: #4caf50;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+        }
+        .clear-logs {
+            background-color: #424242;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="main-container">
+        <h1>Deep Research Chat</h1>
+        <div id="chat-container">
+            <div id="chat-messages"></div>
+            <div class="input-container">
+                <input type="text" id="chat-input" class="input-field" placeholder="Enter your research topic or feedback...">
+                <button onclick="sendMessage()">Send</button>
+            </div>
+        </div>
+    </div>
+    <div class="process-container">
+        <h2 class="process-title">Agent Process Logs</h2>
+        <button class="clear-logs" onclick="clearProcessLogs()">Clear Logs</button>
+        <div id="process-logs"></div>
+    </div>
+
+    <script>
+        const chatMessages = document.getElementById('chat-messages');
+        const chatInput = document.getElementById('chat-input');
+        const processLogs = document.getElementById('process-logs');
+        let currentResearchId = null;
+
+        function clearProcessLogs() {
+            processLogs.innerHTML = '';
+        }
+
+        function addMessage(message, type = 'agent') {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}-message`;
+            messageDiv.textContent = message;
+            chatMessages.appendChild(messageDiv);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+        }
+
+        function addProcessLogs(logs) {
+            logs.forEach(log => {
+                const logDiv = document.createElement('div');
+                logDiv.className = 'process-log';
+                
+                if (log.includes('Agent Action')) {
+                    logDiv.classList.add('agent-action');
+                } else if (log.includes('Task Action')) {
+                    logDiv.classList.add('task-action');
+                }
+                
+                logDiv.textContent = log;
+                processLogs.appendChild(logDiv);
+            });
+            processLogs.scrollTop = processLogs.scrollHeight;
+        }
+
+        function sendMessage() {
+            const message = chatInput.value.trim();
+            
+            // Allow empty messages when providing feedback
+            if (!message && !currentResearchId) return;
+
+            // Only add user message if it's not empty
+            if (message) {
+                addMessage(message, 'user');
+            }
+
+            if (currentResearchId) {
+                // Send as feedback
+                fetch('/provide_feedback', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        research_id: currentResearchId,
+                        feedback: message
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.result) {
+                        addMessage(data.result);
+                        if (data.process_logs) {
+                            addProcessLogs(data.process_logs);
+                        }
+                        if (!data.needs_feedback) {
+                            currentResearchId = null;
+                            addMessage("Research plan has been finalized. Proceeding with research execution...", 'agent');
+                        } else if (data.result.includes('Research Plan')) {
+                            addMessage("Processing your feedback on the research plan...", 'agent');
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    addMessage('Error processing feedback.', 'agent');
+                });
+            } else {
+                // Start new research
+                clearProcessLogs();
+                fetch('/start_research', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        topic: message,
+                        outline: null
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    addMessage(data.result);
+                    if (data.process_logs) {
+                        addProcessLogs(data.process_logs);
+                    }
+                    if (data.needs_feedback) {
+                        currentResearchId = data.research_id;
+                        // Add feedback instructions for research plan
+                        if (data.result.includes('Research Plan') && !data.result.includes('HUMAN FEEDBACK')) {
+                            addMessage(`Please review the research plan above and provide your feedback:
+        1. If you're satisfied with the plan, just press Enter without typing anything
+        2. If you want changes, provide specific feedback about what to modify
+        3. You can provide multiple rounds of feedback until satisfied`, 'agent');
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                    addMessage('Error starting research.', 'agent');
+                });
+            }
+
+            chatInput.value = '';
+        }
+
+        // Handle Enter key in chat input
+        chatInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+    </script>
+</body>
+</html>
