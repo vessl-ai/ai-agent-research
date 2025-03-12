@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 # Pydantic models for request/response validation
 class ResearchRequest(BaseModel):
     topic: str
-    depth: Optional[int] = 2
-    breadth: Optional[int] = 2
+    depth: Optional[int] = 1
+    breadth: Optional[int] = 1
 
 class FeedbackRequest(BaseModel):
     research_id: str
