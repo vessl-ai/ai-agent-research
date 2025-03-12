@@ -1,0 +1,44 @@
+research_task:
+  description: >
+    Conduct a thorough research about {topic}. Always start by querying Qdrant first
+    for specialized information. If Qdrant doesn't provide sufficient information,
+    complement your research using Serper for internet searches. For websites with
+    valuable information, use Firecrawl to extract more detailed content.
+    Make sure you find any interesting and relevant information given
+    the current year is 2025.
+  expected_output: >
+    A list with 10 bullet points of the most relevant information about {topic},
+    each point including the source of information (Qdrant reference, URL, or scraped content)
+  agent: researcher
+
+reporting_task:
+  description: >
+    Review the context you got and expand each topic into a full section for a report.
+    Make sure the report is detailed and contains any and all relevant information.
+    Include source links for each piece of information to ensure traceability.
+  expected_output: >
+    A fully fledged report with the main topics, each with a full section of information.
+    Each section must include relevant source links and references.
+    Formatted as markdown without '```'
+  agent: reporting_analyst
+
+manager_review_task:
+  description: >
+    Review the report thoroughly for executive-level quality. Verify all sources using Firecrawl 
+    to ensure links are valid and content is accurate. Enhance the report by:
+    1. Validating all sources and removing any with broken links
+    2. Adding strategic business implications for each finding
+    3. Ensuring the language is appropriate for corporate leadership
+    4. Adding an executive summary at the beginning
+    5. Organizing findings by strategic impact
+  expected_output: >
+    A polished, executive-ready report with verified sources, strategic insights, and clear business implications.
+    The report should be in markdown format without '```' and include:
+    - Executive Summary
+    - Company Overview
+    - Financial Overview
+    - Strategic Focus and Shift
+    - Detailed Analysis with Verified Sources
+    - Fun Facts
+    - References
+  agent: manager

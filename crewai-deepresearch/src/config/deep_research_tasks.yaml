@@ -1,0 +1,169 @@
+# For Deep Research
+deep_research_plan:
+  description: >
+    Create a comprehensive research plan for the given topic: {topic}
+    
+    Your task is to create a comprehensive research plan that will guide our deep research process.
+    
+    The plan should include:
+    1. A clear title for the research
+    2. 3-5 main sections to explore
+    3. Key questions to answer in each section
+    4. Specific search queries to use for each section
+    5. A recommended search depth (1-5) based on the complexity of the topic
+    
+    If prior context is available, use it to inform your plan:
+    {prior_context}
+    
+    If prior learnings are available, build upon them:
+    {prior_learnings}
+    
+    If prior directions are available, consider them in your plan:
+    {prior_directions}
+  expected_output: >
+    A structured research plan with clear objectives and steps
+  agent: research_planner
+
+deep_research_task:
+  description: >
+    Conduct a thorough research about {topic}. Always start by querying Qdrant first
+    for specialized information. If Qdrant doesn't provide sufficient information,
+    complement your research using Serper for internet searches. For websites with
+    valuable information, use Firecrawl to extract more detailed content.
+    
+    This is iteration {iteration} out of {total_iterations} in our research process.
+    
+    Follow the research plan to guide your search.
+    
+    For each finding, include the source information (URL, title, and a brief snippet).
+    
+    If prior context is available, use it to inform your research:
+    {prior_context}
+    
+    If prior learnings are available, build upon them:
+    {prior_learnings}
+    
+    If prior directions are available, consider them in your research:
+    {prior_directions}
+  expected_output: >
+    A list of 10 bullet points of the most relevant information about {topic},
+    each point including the source of information (Qdrant reference, URL, or scraped content).
+    Each bullet point should be a dictionary with "finding" and "source" keys.
+  agent: expert_researcher
+
+deep_analysis_task:
+  description: >
+    Analyze the gathered information and synthesize it into coherent insights.
+    
+    Research Topic: {topic}
+    
+    Your task is to:
+    1. Identify the key themes and patterns across all research findings
+    2. Evaluate the credibility and relevance of the information
+    3. Identify any gaps or contradictions in the research
+    4. Synthesize the findings into a coherent narrative
+    5. Organize the insights according to the research plan sections
+    6. Extract key learnings and potential new research directions
+    
+    If prior context is available, use it to inform your analysis:
+    {prior_context}
+    
+    If prior learnings are available, build upon them:
+    {prior_learnings}
+    
+    If prior directions are available, consider them in your analysis:
+    {prior_directions}
+  expected_output: >
+    A detailed analysis of the gathered information, including:
+    1. Key themes and patterns
+    2. Evaluation of credibility and relevance
+    3. Identified gaps or contradictions
+    4. Synthesized narrative
+    5. Organized insights by research plan sections
+    6. Key learnings and new research directions
+  agent: research_analyst
+
+extract_learnings_directions:
+  description: >
+    Analyze the research results and extract:
+    1. Key learnings: Important facts, insights, and knowledge gained
+    2. New research directions: Questions that emerged, areas that need deeper exploration
+    
+    Research Topic: {topic}
+    
+    Research Results:
+    {research_results}
+    
+    If prior learnings are available, build upon them:
+    {prior_learnings}
+    
+    If prior directions are available, consider them:
+    {prior_directions}
+  expected_output: >
+    A JSON object with two lists:
+    {
+      "learnings": ["learning 1", "learning 2", ...],
+      "directions": ["direction 1", "direction 2", ...]
+    }
+  agent: research_analyst
+
+deep_writing_task:
+  description: >
+    Write a comprehensive report based on the gathered information and analysis.
+    
+    Research Topic: {topic}
+    
+    Your task is to:
+    1. Create a well-structured report following the research plan sections
+    2. Include an executive summary at the beginning
+    3. Ensure each section addresses the key questions identified in the plan
+    4. Incorporate the insights from the analysis
+    5. Use clear, concise, and professional language
+    6. Format the report in markdown
+    
+    If learnings are available, include them in your report:
+    {learnings}
+    
+    If directions are available, include them in your report:
+    {directions}
+  expected_output: >
+    A comprehensive research report in markdown format with:
+    1. Title
+    2. Executive Summary
+    3. Table of Contents
+    4. Introduction
+    5. Sections based on the research plan
+    6. Conclusion
+    7. References
+  agent: research_writer
+
+deep_review_task:
+  description: >
+    Review the report for accuracy, completeness, and clarity.
+    
+    Research Topic: {topic}
+    
+    Your task is to:
+    1. Verify that the report accurately reflects the research findings
+    2. Check that all sections from the research plan are addressed
+    3. Ensure all claims are supported by the sources
+    4. Improve clarity, flow, and readability
+    5. Fix any grammatical or formatting issues
+    6. Add All proper citations and references
+    7. Use Firecrawl to verify any questionable information
+    
+    If learnings are available, ensure they are properly incorporated:
+    {learnings}
+    
+    If directions are available, ensure they are properly incorporated:
+    {directions}
+  expected_output: >
+    A final research report in markdown format with:
+    {
+      "title": "The title of the report",
+      "content": "The full content of the report in markdown format",
+      "sources": [{"url": "source_url", "title": "source_title", "snippet": "source_snippet"}, ...],
+      "learnings": ["learning 1", "learning 2", ...],
+      "directions": ["direction 1", "direction 2", ...]
+    }
+  agent: research_reviewer

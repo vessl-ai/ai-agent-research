@@ -1,273 +1,144 @@
-# Deep Research Agent with CrewAI
+# CrewAI Deep Research
 
-A powerful deep research agent built with CrewAI that conducts comprehensive research on any topic using human-in-the-loop feedback and memory capabilities.
+A powerful deep research implementation using CrewAI to perform iterative, depth-based research on any topic.
 
-## Features
+## Overview
 
-- 🔍 Web search using SerperDev API and Firecrawl
-- 👤 Human-in-the-loop feedback integration
-- 🧠 Memory functionality using Qdrant
-- 📝 Structured research reports
-- 🔄 Iterative improvement based on feedback
-- 💬 Local chat interface with FastAPI backend
-- 📚 Interactive API documentation
-- 🛠️ Modern Python project management with uv
-- 🕷️ Deep website analysis with Firecrawl
+This project implements a deep research system that follows an iterative approach to explore topics in depth. The system uses a crew of specialized AI agents to:
 
-## Requirements
-
-- Python 3.8+
-- Rust (required for tiktoken dependency)
-- Qdrant running locally or a cloud instance
-- API keys for OpenAI and SerperDev
-
-## Installation
-
-1. Install Rust (required for tiktoken):
-```bash
-# On macOS and Linux
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# On Windows
-# Download and run rustup-init.exe from https://rustup.rs
-```
-
-2. Install uv (if not already installed):
-```bash
-pip install uv
-```
-
-3. Clone the repository:
-```bash
-git clone https://github.com/yourusername/crewai-deepresearch.git
-cd crewai-deepresearch
-```
-
-3. Create and activate a virtual environment with uv:
-```bash
-uv venv
-source .venv/bin/activate  # On Unix/macOS
-# or
-.venv\Scripts\activate  # On Windows
-```
-
-4. Install dependencies with uv:
-```bash
-uv pip install -e .
-```
-
-5. Set up environment variables:
-```bash
-cp .env.example .env
-```
-
-Edit the `.env` file with your API keys:
-```
-OPENAI_API_KEY=your_openai_api_key
-SERPER_API_KEY=your_serper_api_key  # Get this from https://serper.dev
-QDRANT_URL=your_qdrant_url  # Optional: defaults to http://localhost:6333
-QDRANT_API_KEY=your_qdrant_api_key  # Optional: if authentication is enabled
-```
-
-## Development Setup
-
-Install development dependencies:
-```bash
-uv pip install -e ".[dev]"
-```
-
-Format code:
-```bash
-black src/
-isort src/
-```
-
-Run tests:
-```bash
-pytest
-```
-
-## Troubleshooting
-
-### Tiktoken Installation Issues
-
-If you encounter issues with tiktoken installation:
-
-1. Ensure Rust is installed and available in your PATH:
-```bash
-rustc --version
-```
-
-2. If Rust is not found, restart your terminal after installing Rust
-
-3. Try installing tiktoken separately:
-```bash
-uv pip install --no-deps tiktoken
-uv pip install -e .
-```
-
-4. On Windows, you might need to install Visual Studio Build Tools with C++ support
-
-## SerperDev Integration
-
-This project uses CrewAI's SerperDevTool for web searches, which provides:
-- High-quality search results
-- News and recent information
-- Structured data extraction
-- Multiple search types (web, news, places)
-
-To get your SerperDev API key:
-1. Visit https://serper.dev
-2. Sign up for an account
-3. Navigate to your dashboard
-4. Copy your API key
-5. Add it to your .env file as SERPER_API_KEY
-
-## Usage
-
-### Python API
-
-Here's a simple example of how to use the Deep Research Agent in your code:
-
-```python
-from src.deep_research_agent import DeepResearchAgent
-
-# Initialize the agent
-agent = DeepResearchAgent()
-
-# Define your research topic
-topic = "Impact of artificial intelligence on healthcare"
-
-# Optional: Provide a structured outline
-outline = [
-    "Current applications of AI in healthcare",
-    "Benefits and improvements in patient care",
-    "Challenges and limitations",
-    "Future prospects and potential developments",
-    "Ethical considerations"
-]
-
-# Conduct research
-result = agent.research(topic, outline)
-
-# Provide feedback for improvement
-feedback = "Please add more specific examples of AI applications in diagnostics"
-updated_result = agent.research(topic, outline, feedback)
-```
-
-### Local Chat Interface
-
-The project includes a local chat interface with FastAPI backend for interactive debugging and testing. To use it:
-
-1. Start the FastAPI server:
-```bash
-python src/app.py
-```
-
-2. Open your browser and navigate to:
-```
-http://localhost:5000
-```
-
-3. Access the API documentation:
-```
-http://localhost:5000/docs  # Swagger UI
-http://localhost:5000/redoc  # ReDoc
-```
-
-The chat interface provides:
-- Interactive research topic input
-- Optional outline specification
-- Real-time research progress updates
-- Interactive feedback mechanism
-- Easy debugging of the research process
-- Process logs panel showing agent's thought process
-
-### API Endpoints
-
-The FastAPI backend provides the following endpoints:
-
-- `GET /` - Serves the chat interface
-- `POST /start_research` - Starts a new research session
-  ```json
-  {
-    "topic": "string",
-    "outline": ["string"]  // optional
-  }
-  ```
-- `POST /provide_feedback` - Provides feedback for ongoing research
-  ```json
-  {
-    "research_id": "string",
-    "feedback": "string"
-  }
-  ```
-
-Features of the API:
-- RESTful endpoints
-- Request/response validation with Pydantic
-- Interactive API documentation
-- CORS support
-- WebSocket for real-time updates
-- Session management
+1. Plan the research
+2. Gather information
+3. Analyze findings
+4. Extract key learnings and new research directions
+5. Iteratively explore new directions based on depth parameter
+6. Generate a comprehensive report
 
 ## How It Works
 
-1. **Initial Research**: The agent uses two powerful tools for comprehensive research:
-   - **SerperDev**: For broad web searches and discovering relevant websites
-   - **Firecrawl**: For deep analysis of specific websites and content extraction
+The deep research process follows this flow:
 
-2. **Structured Analysis**: If an outline is provided, the agent follows it to structure the research. Otherwise, it creates a logical structure based on the initial findings. The agent intelligently combines information from both SerperDev searches and Firecrawl deep analysis.
+```
+flowchart TB
+    subgraph Input
+        Q[User Query]
+        B[Breadth Parameter]
+        D[Depth Parameter]
+    end
 
-3. **Human Feedback**: After completing initial research, the agent presents its findings and asks for feedback.
+    DR[Deep Research] -->
+    SQ[SERP Queries] -->
+    PR[Process Results]
 
-4. **Iterative Improvement**: Based on the feedback received, the agent refines and improves the research until you're satisfied with the results.
+    subgraph Results[Results]
+        direction TB
+        NL((Learnings))
+        ND((Directions))
+    end
 
-5. **Memory Integration**: Research findings and insights are stored in Qdrant for future reference and to improve subsequent research tasks.
+    PR --> NL
+    PR --> ND
 
-## Setting Up Qdrant
+    DP{depth > 0?}
 
-1. Using Docker (recommended):
-```bash
-docker run -p 6333:6333 qdrant/qdrant
+    RD["Next Direction:
+    - Prior Goals
+    - New Questions
+    - Learnings"]
+
+    MR[Markdown Report]
+
+    %% Main Flow
+    Q & B & D --> DR
+
+    %% Results to Decision
+    NL & ND --> DP
+
+    %% Circular Flow
+    DP -->|Yes| RD
+    RD -->|New Context| DR
+
+    %% Final Output
+    DP -->|No| MR
 ```
 
-2. Or install Qdrant locally following the [official documentation](https://qdrant.tech/documentation/quick_start/).
+### Parameters
 
-## Debugging Tips
+- **Topic**: The research query or topic
+- **Depth**: How many levels of iterative research to perform (1-5)
+- **Breadth**: How many search queries to perform at each depth level (1-5)
 
-When using the chat interface for debugging:
+### Process
 
-1. Monitor the FastAPI server logs for detailed error information
-2. Use the interactive API documentation at `/docs` to test endpoints directly
-3. Check the browser's developer tools for frontend issues
-4. Review the research session management in the interface
-5. Monitor Qdrant memory storage and retrieval
-6. Use FastAPI's automatic request validation for debugging input issues
-7. Check the process logs panel for detailed agent behavior
+1. **Planning Phase**: The research planner agent creates a structured research plan
+2. **Research Phase**: The expert researcher agent executes searches and gathers information
+3. **Analysis Phase**: The research analyst agent analyzes the findings and extracts key learnings and new directions
+4. **Iterative Exploration**: If depth > 0, the system selects a new direction and starts a new research cycle
+5. **Report Generation**: When depth = 0 or no new directions are found, the writer and reviewer agents generate a comprehensive report
 
-## Project Management with UV
+## Implementation Details
 
-This project uses uv for modern Python project management:
+The system uses an iterative approach rather than recursion to handle the depth-based research process. This provides several advantages:
 
-- Fast dependency resolution
-- Deterministic builds
-- Built-in virtual environment management
-- Compatible with pyproject.toml
-- Development tools integration
+- Avoids potential stack overflow issues with deep recursion
+- Makes debugging easier
+- Provides better control over the research flow
+- Allows for easier tracking of progress across iterations
 
-Key uv commands:
-```bash
-uv venv                     # Create virtual environment
-uv pip install -e .        # Install project dependencies
-uv pip install -e ".[dev]" # Install development dependencies
-uv pip freeze             # Lock dependencies
+Each iteration builds upon the knowledge gained in previous iterations, creating a comprehensive research report that explores the topic in depth.
+
+## Usage
+
+### API Endpoints
+
+- `POST /start_research`: Start a new research session
+  ```json
+  {
+    "topic": "Quantum computing applications in medicine",
+    "depth": 3,
+    "breadth": 3
+  }
+  ```
+
+- `GET /research/{research_id}`: Get the results of a research session
+
+### Response Format
+
+```json
+{
+  "research_id": "uuid",
+  "result": "Markdown formatted research report",
+  "sources": [
+    {"url": "source_url", "title": "source_title", "snippet": "source_snippet"}
+  ],
+  "learnings": [
+    "Key learning 1",
+    "Key learning 2"
+  ],
+  "directions": [
+    "Research direction 1",
+    "Research direction 2"
+  ],
+  "process_logs": [
+    "Log entry 1",
+    "Log entry 2"
+  ]
+}
 ```
 
-## Contributing
+## Installation
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+1. Clone the repository
+2. Install dependencies: `pip install -r requirements.txt`
+3. Set up environment variables in `.env` file
+4. Run the application: `python src/run.py`
+
+## Configuration
+
+The system uses YAML configuration files for agents and tasks:
+
+- `src/config/deep_research_agents.yaml`: Agent configurations
+- `src/config/deep_research_tasks.yaml`: Task configurations
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+MIT

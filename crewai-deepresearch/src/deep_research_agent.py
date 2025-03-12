@@ -1,649 +1,774 @@
-from typing import Optional
-from crewai import Agent, Task, Process, Crew
-from crewai_tools import SerperDevTool, FirecrawlScrapeWebsiteTool
-from qdrant_client import QdrantClient
-from qdrant_client.models import Distance, VectorParams
-import os
-from dotenv import load_dotenv
 import logging
-from queue import Queue
-from threading import Event
+from typing import Any, Callable, Dict, List, Optional
 
-# Configure logging
-logging.basicConfig(level=logging.INFO,
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+from crewai import Agent, Crew, Process, Task
+from crewai.agents.crew_agent_executor import ToolResult
+from crewai.agents.parser import AgentAction, AgentFinish
+from crewai.crews.crew_output import CrewOutput
+from crewai.project import CrewBase, agent, crew, task
+from crewai_tools import FirecrawlScrapeWebsiteTool, SerperDevTool
+from pydantic import BaseModel, Field
 
-# Load environment variables
-load_dotenv()
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger("deep_research")
 
-class DeepResearchAgent:
-    # Class constants for reflection and review aspects
-    REFLECTION_ASPECTS = ["Knowledge Synthesis", "Gap Analysis", "Research Direction"]
+
+# Custom step callback for monitoring agent progress
+def step_callback(step: Dict[str, Any]) -> None:
+    """Callback function for monitoring agent steps."""
+    # Safely get values with defaults
+    agent_name = step.get("agent_name", "Unknown") if isinstance(step, dict) else "Unknown"
     
-    REVIEW_ASPECTS = [
-        {
-            "name": "Content Analysis",
-            "focus": """
-- Review overall coverage and depth
-- Check for gaps in research
-- Verify key findings
-- Evaluate comprehensiveness
-- Assess depth of analysis""",
-        },
-        {
-            "name": "Evidence Review",
-            "focus": """
-- Examine each source and citation
-- Verify evidence quality
-- Check fact accuracy
-- Assess source credibility
-- Validate key claims""",
-        },
-        {
-            "name": "Structure Assessment",
-            "focus": """
-- Analyze organization and flow
-- Check section transitions
-- Evaluate argument progression
-- Review logical coherence
-- Assess information hierarchy""",
-        },
-        {
-            "name": "Quality Enhancement",
-            "focus": """
-- Improve clarity and readability
-- Strengthen weak sections
-- Polish presentation
-- Enhance formatting
-- Refine language and style
-- Attached the each sources to the research""",
+    # Handle different step formats
+    if isinstance(step, dict):
+        action = step.get("action", {})
+        if isinstance(action, dict):
+            action_type = action.get("type", "unknown")
+
+            if action_type == "tool":
+                tool_name = action.get("tool", "unknown_tool")
+                logger.info(f"Agent {agent_name} using tool: {tool_name}")
+            elif action_type == "message":
+                logger.info(f"Agent {agent_name} thinking...")
+
+            # Log token usage if available
+            if "tokens" in step:
+                tokens = step.get("tokens", {})
+                logger.info(
+                    f"Token usage - Prompt: {tokens.get('prompt', 0)}, Completion: {tokens.get('completion', 0)}"
+                )
+    else:
+        # For non-dict step objects, just log the type
+        logger.info(f"Step callback received non-dict object of type: {type(step)}")
+
+
+class DeepResearchOutput(BaseModel):
+    """Output from the Deep Research agent."""
+
+    name: str
+    content: str
+    sources: List[Dict[str, Any]] = Field(default_factory=list)
+    learnings: List[str] = Field(default_factory=list)
+    directions: List[str] = Field(default_factory=list)
+
+    @classmethod
+    def from_crew_output(cls, crew_output: Any) -> "DeepResearchOutput":
+        """Convert CrewAI output to DeepResearchOutput."""
+        if isinstance(crew_output, CrewOutput):
+            crew_output_dict = crew_output.to_dict()
+            return cls(
+                name=str(crew_output_dict.get("name", "Research Report")),
+                content=str(crew_output_dict.get("content", "")),
+                sources=crew_output_dict.get("sources", []),
+                learnings=crew_output_dict.get("learnings", []),
+                directions=crew_output_dict.get("directions", []),
+            )
+        elif isinstance(crew_output, dict):
+            return cls(
+                name=str(crew_output.get("name", "Research Report")),
+                content=str(crew_output.get("content", "")),
+                sources=crew_output.get("sources", []),
+                learnings=crew_output.get("learnings", []),
+                directions=crew_output.get("directions", []),
+            )
+        elif hasattr(crew_output, "raw_output"):
+            return cls(
+                name="Research Report",
+                content=str(crew_output.raw_output),
+                sources=[],
+                learnings=[],
+                directions=[],
+            )
+        elif hasattr(crew_output, "return_values"):
+            # Handle AgentFinish objects
+            return_values = crew_output.return_values
+            return cls(
+                name="Research Report",
+                content=str(return_values.get("output", "")),
+                sources=return_values.get("sources", []),
+                learnings=return_values.get("learnings", []),
+                directions=return_values.get("directions", []),
+            )
+        else:
+            # Fallback for any other type
+            logger.warning(f"Unexpected output type: {type(crew_output)}")
+            try:
+                # Try to convert to string
+                content = str(crew_output)
+                return cls(
+                    name="Research Report",
+                    content=content,
+                    sources=[],
+                    learnings=[],
+                    directions=[],
+                )
+            except Exception as e:
+                logger.error(f"Error converting output to string: {str(e)}")
+                return cls(
+                    name="Research Report (Error)",
+                    content=f"An error occurred while processing the research output: {str(e)}",
+                    sources=[],
+                    learnings=[],
+                    directions=[],
+                )
+
+
+class ProgressCallback:
+    """Callback handler for tracking Deep Research progress."""
+
+    def __init__(self, custom_callback=None):
+        """Initialize the progress callback handler."""
+        self.current_agent = None
+        self.current_task = None
+        self.steps = {
+            "planning": {"status": "pending", "progress": 0},
+            "research": {"status": "pending", "progress": 0},
+            "analysis": {"status": "pending", "progress": 0},
+            "writing": {"status": "pending", "progress": 0},
+            "review": {"status": "pending", "progress": 0},
         }
-    ]
+        self.custom_callback = custom_callback
+
+    def __call__(self, output: Any):
+        """Process the callback output."""
+        # Update current agent and task based on output
+        if isinstance(output, AgentAction):
+            agent_name = self._get_agent_name(output)
+            if agent_name:
+                self.current_agent = agent_name
+                self._update_step_status(agent_name, "in_progress")
+
+            print(
+                f"[{self.current_agent or 'Unknown Agent'}] Action: {output.tool} - {output.tool_input[:100]}..."
+            )
+
+        elif isinstance(output, AgentFinish):
+            if self.current_agent:
+                self._update_step_status(self.current_agent, "completed", 100)
+                # Safely access return_values
+                return_values = getattr(output, "return_values", {})
+                output_text = return_values.get("output", "") if isinstance(return_values, dict) else str(return_values)
+                print(f"[{self.current_agent}] Completed task: {output_text[:100]}...")
+
+        elif isinstance(output, ToolResult):
+            print(
+                f"[{self.current_agent or 'Unknown Agent'}] Tool Result: {output.tool} (truncated)"
+            )
+
+        else:
+            print(f"[Process] Unknown output type: {type(output)}")
+
+        # Call custom callback if provided
+        if self.custom_callback:
+            self.custom_callback(output, self.get_progress())
+
+    def _get_agent_name(self, output: AgentAction) -> Optional[str]:
+        """Extract the agent name from the output."""
+        agent_mapping = {
+            "planner": ["planning", "plan", "outline"],
+            "researcher": ["research", "search", "find", "gather"],
+            "analyst": ["analysis", "analyze", "synthesize"],
+            "writer": ["writing", "write", "draft", "compose"],
+            "reviewer": ["review", "refine", "edit", "improve"],
+        }
+
+        # Try to determine the agent from the tool input
+        tool_input = output.tool_input.lower() if hasattr(output, "tool_input") else ""
+
+        for agent, keywords in agent_mapping.items():
+            if any(keyword in tool_input for keyword in keywords):
+                return agent
+
+        return (
+            self.current_agent
+        )  # Return current agent if we can't determine a new one
+
+    def _update_step_status(self, agent_name: str, status: str, progress: int = 50):
+        """Update the status of a step."""
+        step_mapping = {
+            "planner": "planning",
+            "researcher": "research",
+            "analyst": "analysis",
+            "writer": "writing",
+            "reviewer": "review",
+        }
+
+        step = step_mapping.get(agent_name)
+        if step and step in self.steps:
+            self.steps[step]["status"] = status
+            self.steps[step]["progress"] = progress
+
+    def get_progress(self) -> Dict[str, Any]:
+        """Get the current progress of the research process."""
+        return {
+            "current_agent": self.current_agent,
+            "current_task": self.current_task,
+            "steps": self.steps,
+            "overall_progress": self._calculate_overall_progress(),
+        }
+
+    def _calculate_overall_progress(self) -> int:
+        """Calculate the overall progress percentage."""
+        weights = {
+            "planning": 10,
+            "research": 30,
+            "analysis": 20,
+            "writing": 30,
+            "review": 10,
+        }
+
+        total_progress = 0
+        for step, weight in weights.items():
+            step_progress = self.steps[step]["progress"] if step in self.steps else 0
+            total_progress += (step_progress * weight) / 100
+
+        return int(total_progress)
+
+
+@CrewBase
+class DeepResearchCrew:
+    """
+    Deep Research Crew for comprehensive research and report generation.
+    This crew follows a structured research process:
+    1. Planning: Analyze the topic and create a research plan
+    2. Research: Execute searches and gather information (can be iterated multiple times)
+    3. Analysis: Analyze and synthesize the information
+    4. Writing: Generate a comprehensive report
+    5. Review: Review and refine the report
+    
+    The research phase can be iterated multiple times (up to 10 iterations) to gather
+    more comprehensive information. Each iteration builds upon the previous research results.
+    """
+    agents_config = "config/deep_research_agents.yaml"
+    tasks_config = "config/deep_research_tasks.yaml"
 
     def __init__(self):
-        # Initialize Qdrant client for memory
-        self.qdrant = QdrantClient(
-            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-            api_key=os.getenv("QDRANT_API_KEY")
-        )
-        
-        # Initialize collection for research memory
-        self._init_memory()
-        
-        # Initialize current result storage
-        self.current_result = ""
-        
-        # Initialize human input handling
-        self.human_input_queue = Queue()
-        self.human_input_ready = Event()
-        
-        # Create the planner agent
-        self.planner = Agent(
-            role='Research Planner',
-            goal='Create focused and actionable research plans',
-            backstory="""You are a strategic research planner creating concise, focused research plans.
+        super().__init__()
 
-Your planning process:
-1. Analyze the research topic thoroughly
-2. Define clear research objectives and scope
-3. Structure the research into logical sections
-4. Specify required sources and methodologies
-
-For each research plan, you will:
-<Research Structure>
-- Define main sections and subsections
-- Specify key questions to answer
-- Identify critical areas to investigate
-</Research Structure>
-
-<Research Sources>
-- List specific types of sources needed
-- Prioritize high-quality, authoritative sources
-- Include both broad and specialized sources
-</Research Sources>
-
-<Research Methodology>
-- Detail data collection approaches
-- Specify analysis frameworks
-- Define quality criteria
-</Research Methodology>
-
-You ensure all plans are:
-- Well-organized with clear headers
-- Specific and actionable
-- Comprehensive yet focused
-- Structured for efficient execution""",
-            verbose=False,
-            allow_delegation=False,
-            process_callback=self._log_process
+    @agent
+    def research_planner(self) -> Agent:
+        """Agent responsible for planning the research process."""
+        return Agent(
+            config=self.agents_config["research_planner"],
+            verbose=True,
+            max_iter=30,  # Increased iterations for more thorough planning
+            respect_context_window=True,
+            max_rpm=None,  # No limit on requests per minute for planning
+            step_callback=step_callback,
+            allow_delegation=False,  # Planner should focus on its own task
+            llm='openai/gpt-4o',
         )
 
-        # Create the research agent with search tools
-        self.researcher = Agent(
-            role='Research Expert',
-            goal='Execute research plans and gather comprehensive information',
-            backstory="""You are an expert researcher conducting deep, thorough research.
-
-Your research process:
-1. Follow the approved research plan precisely
-2. Use search tools strategically:
-   - SerperDev for broad information gathering
-   - FirecrawlScrapeWebsiteTool for deep analysis of specific sources
-3. Evaluate and synthesize information
-
-For each source you find:
-<Source Evaluation>
-- Assess credibility and authority
-- Verify currency and relevance
-- Cross-reference with other sources
-</Source Evaluation>
-
-<Information Gathering>
-- Extract key findings and insights
-- Collect supporting evidence
-- Document methodologies used
-</Information Gathering>
-
-<Analysis>
-- Synthesize information across sources
-- Identify patterns and trends
-- Draw well-supported conclusions
-</Analysis>
-
-You ensure all research:
-- Is comprehensive and well-documented
-- Uses high-quality, reliable sources
-- Provides specific examples and evidence
-- Addresses all aspects of the research plan""",
-            verbose=False,
-            allow_delegation=False,
+    @agent
+    def expert_researcher(self) -> Agent:
+        """Agent responsible for executing searches and gathering information."""
+        return Agent(
+            config=self.agents_config["expert_researcher"],
+            verbose=True,
             tools=[
                 SerperDevTool(),
-                FirecrawlScrapeWebsiteTool()
+                FirecrawlScrapeWebsiteTool(),
             ],
-            process_callback=self._log_process
+            max_iter=40,  # Higher iterations for thorough research
+            max_rpm=10,  # Limit requests per minute to avoid rate limiting
+            allow_delegation=False,  # Researcher should focus on its own tasks
+            step_callback=step_callback,
+            respect_context_window=True,  # Prevent token limit issues
+            max_retry_limit=5,  # Increase retry limit for research tasks
+            llm='openai/gpt-4o',
         )
 
-        # Create the section writer agent
-        self.section_writer = Agent(
-            role='Section Writer',
-            goal='Write comprehensive and well-structured research sections',
-            backstory="""You are an expert writer specializing in creating detailed research sections.
-
-Your writing process:
-1. Analyze the research findings thoroughly
-2. Structure content logically
-3. Present information clearly
-4. Support claims with evidence
-
-For each section you write:
-<Content Organization>
-- Create clear topic sentences
-- Develop logical paragraph flow
-- Use appropriate transitions
-- Maintain consistent focus
-</Content Organization>
-
-<Evidence Integration>
-- Incorporate relevant research findings
-- Cite sources appropriately
-- Connect evidence to claims
-- Provide context for findings
-</Evidence Integration>
-
-<Writing Quality>
-- Use clear, academic language
-- Maintain consistent tone
-- Ensure technical accuracy
-- Follow style guidelines
-</Writing Quality>
-
-You ensure all sections:
-- Are comprehensive and well-organized
-- Present information clearly
-- Support claims with evidence
-- Maintain academic standards""",
-            verbose=False,
-            allow_delegation=False,
-            process_callback=self._log_process
+    @agent
+    def research_analyst(self) -> Agent:
+        """Agent responsible for analyzing and synthesizing information."""
+        return Agent(
+            config=self.agents_config["research_analyst"],
+            verbose=True,
+            tools=[
+                SerperDevTool(),
+                FirecrawlScrapeWebsiteTool(),
+            ],
+            max_iter=35,  # Higher iterations for deeper analysis
+            respect_context_window=True,
+            allow_delegation=False,  # Analyst should focus on its own tasks
+            step_callback=step_callback,
+            llm='openai/gpt-4o',
         )
 
-        # Create the section grader agent
-        self.section_grader = Agent(
-            role='Section Grader',
-            goal='Evaluate and grade research section quality',
-            backstory="""You are an expert evaluator assessing research section quality.
-
-Your evaluation process:
-1. Assess content completeness
-2. Evaluate evidence quality
-3. Check writing clarity
-4. Grade technical accuracy
-
-For each section you grade:
-<Content Assessment>
-- Evaluate topic coverage
-- Check argument strength
-- Assess logical flow
-- Review evidence quality
-</Content Assessment>
-
-<Technical Review>
-- Verify factual accuracy
-- Check methodology usage
-- Assess technical depth
-- Evaluate source quality
-</Technical Review>
-
-<Writing Evaluation>
-- Grade clarity and style
-- Check organization
-- Assess readability
-- Review formatting
-</Writing Evaluation>
-
-You ensure all evaluations:
-- Are thorough and objective
-- Provide specific feedback
-- Suggest improvements
-- Use consistent criteria""",
-            verbose=False,
-            allow_delegation=False,
-            process_callback=self._log_process
+    @agent
+    def research_writer(self) -> Agent:
+        """Agent responsible for writing the report."""
+        return Agent(
+            config=self.agents_config["research_writer"],
+            verbose=True,
+            max_iter=25,  # Standard iterations for writing
+            respect_context_window=True,
+            allow_delegation=False,  # Writer should focus on its own tasks
+            step_callback=step_callback,
+            llm='openai/gpt-4o',
         )
 
-        # Create the reviewer agent
-        self.reviewer = Agent(
-            role='Research Reviewer',
-            goal='Review and refine research findings',
-            backstory="""You are a meticulous reviewer ensuring research quality and completeness.
-
-Your review process:
-1. Evaluate research comprehensiveness
-2. Assess logical flow and structure
-3. Verify evidence and citations
-4. Enhance clarity and presentation
-
-For each review, you examine:
-<Content Quality>
-- Depth of research coverage
-- Strength of evidence
-- Logical consistency
-- Completeness of analysis
-</Content Quality>
-
-<Structure and Organization>
-- Clear and logical flow
-- Effective section organization
-- Proper transitions
-- Balanced coverage
-</Structure and Organization>
-
-<Presentation>
-- Professional tone
-- Clear writing style
-- Effective use of examples
-- Proper formatting
-</Presentation>
-
-You ensure all final reports:
-- Meet high academic standards
-- Present clear, actionable insights
-- Are well-supported by evidence
-- Maintain professional quality""",
-            verbose=False,
-            allow_delegation=False,
-            process_callback=self._log_process
+    @agent
+    def research_reviewer(self) -> Agent:
+        """Agent responsible for reviewing and refining the report."""
+        return Agent(
+            config=self.agents_config["research_reviewer"],
+            verbose=True,
+            tools=[SerperDevTool(), FirecrawlScrapeWebsiteTool()],
+            max_iter=30,  # Higher iterations for thorough review
+            respect_context_window=True,
+            allow_delegation=False,  # Reviewer should focus on its own tasks
+            step_callback=step_callback,
+            llm='openai/gpt-4o',
         )
 
-    def provide_human_input(self, input_text: str):
-        """Provide human input to the agent"""
-        self.human_input_queue.put(input_text)
-        self.human_input_ready.set()
+    @task
+    def deep_research_plan(self) -> Task:
+        """Task for planning the research process."""
+        return Task(
+            config=self.tasks_config["deep_research_plan"],
+        )
 
-    def _handle_human_input(self, message: str) -> str:
-        """Handle human input during agent execution"""
-        # Log the request for human input
-        logger.info(f"\n=== HUMAN INPUT REQUESTED ===\n{message}\n")
-        
-        # Add the request to the current result
-        self.current_result += f"\n=====\n## HUMAN FEEDBACK: {message}\nPlease follow these guidelines:\n - If you are happy with the result, simply hit Enter without typing anything.\n - Otherwise, provide specific improvement requests.\n - You can provide multiple rounds of feedback until satisfied.\n=====\n"
-        
-        # Wait for human input
-        self.human_input_ready.wait()
-        self.human_input_ready.clear()
-        
-        # Get the input from the queue
-        human_input = self.human_input_queue.get()
-        
-        return human_input
-
-    def _init_memory(self):
-        """Initialize Qdrant collection for storing research memory"""
-        try:
-            self.qdrant.create_collection(
-                collection_name="research_memory",
-                vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
-            )
-        except Exception as e:
-            # Collection might already exist
-            pass
-
-    def _log_process(self, process: Process) -> None:
-        """Log agent process details"""
-        if process.type == "Agent Action":
-            # Log detailed process for the process logs
-            logger.info(f"\n{'='*50}")
-            logger.info(f"🤖 Agent: {process.agent.role}")
-            logger.info(f"🎯 Goal: {process.agent.goal}")
-            logger.info(f"🛠️ Tool: {process.tool_name if process.tool_name else 'No tool used'}")
-            logger.info(f"💭 Thought: {process.thought}")
-            logger.info(f"🎬 Action: {process.action}")
-            if process.tool_input:
-                logger.info(f"📥 Tool Input: {process.tool_input}")
-            if process.tool_output:
-                logger.info(f"📤 Tool Output: {process.tool_output[:500]}...")  # Truncate long outputs
-            logger.info(f"{'='*50}\n")
-
-            # Add detailed research progress to the chat
-            if process.agent.role == 'Research Expert':
-                if process.tool_name:
-                    self.current_result += f"\n📚 Researching: {process.thought}\n"
-                    self.current_result += f"🔍 Using {process.tool_name} to gather information...\n"
-                    if process.tool_output:
-                        self.current_result += f"📋 Found: {process.tool_output[:300]}...\n"
-                else:
-                    self.current_result += f"\n💡 Analyzing: {process.thought}\n"
-            elif process.agent.role == 'Research Planner':
-                self.current_result += f"\n📋 Planning: {process.thought}\n"
-                if hasattr(process, 'output') and process.output:
-                    self.current_result += f"✍️ Plan details:\n{process.output}\n"
-            elif process.agent.role == 'Section Writer':
-                self.current_result += f"\n✍️ Writing: {process.thought}\n"
-                if hasattr(process, 'output') and process.output:
-                    self.current_result += f"📄 Section content:\n{process.output}\n"
-            elif process.agent.role == 'Section Grader':
-                self.current_result += f"\n📊 Grading: {process.thought}\n"
-                if hasattr(process, 'output') and process.output:
-                    self.current_result += f"🎯 Grade details:\n{process.output}\n"
-            elif process.agent.role == 'Research Reviewer':
-                self.current_result += f"\n✅ Reviewing: {process.thought}\n"
-                if hasattr(process, 'output') and process.output:
-                    self.current_result += f"📝 Review notes:\n{process.output}\n"
-
-        elif process.type == "Task Action":
-            logger.info(f"\n{'='*50}")
-            logger.info(f"📋 Task: {process.task.description[:100]}...")
-            logger.info(f"🤖 Assigned to: {process.agent.role}")
-            logger.info(f"💭 Thought Process: {process.thought}")
-            logger.info(f"{'='*50}\n")
-
-    def create_research_plan(self, topic: str, feedback: Optional[str] = None) -> str:
+    @task
+    def deep_research_task(self) -> Task:
         """
-        Create or update a research plan
+        Task for executing searches and gathering information.
+        
+        This task can be run multiple times in iterations, with each iteration
+        building upon the results of previous iterations. The task will receive
+        the following inputs:
+        - research_plan: The research plan from the planning phase
+        - iteration: The current iteration number
+        - total_iterations: The total number of iterations
+        - previous_research: Results from previous iterations (if any)
+        """
+        return Task(
+            config=self.tasks_config["deep_research_task"],
+            context=[self.deep_research_plan()],  # Use context from planning task
+        )
+
+    @task
+    def deep_analysis_task(self) -> Task:
+        """Task for analyzing and synthesizing information."""
+        return Task(
+            config=self.tasks_config["deep_analysis_task"],
+            # Context will be provided directly in the inputs
+        )
+
+    @task
+    def deep_writing_task(self) -> Task:
+        """Task for writing the report."""
+        return Task(
+            config=self.tasks_config["deep_writing_task"],
+            context=[self.deep_analysis_task()],  # Use context from analysis task
+        )
+
+    @task
+    def deep_review_task(self) -> Task:
+        """Task for reviewing and refining the report."""
+        return Task(
+            config=self.tasks_config["deep_review_task"],
+            output_pydantic=DeepResearchOutput,
+            context=[self.deep_writing_task()],  # Use context from writing task
+        )
+
+    @task
+    def extract_learnings_directions_task(self) -> Task:
+        """Task for extracting learnings and new research directions from research results."""
+        return Task(
+            config=self.tasks_config["extract_learnings_directions"],
+        )
+
+    @crew
+    async def iterative_research_crew(
+        self, 
+        topic: str, 
+        depth: int = 2, 
+        breadth: int = 2,
+    ) -> DeepResearchOutput:
+        """
+        Execute an iterative research process based on depth parameter.
         
         Args:
-            topic: The research topic
-            feedback: Optional feedback for plan update
+            topic: The research topic or question
+            depth: How many levels of research to perform (1-5)
+            breadth: How many search queries to perform at each level (1-5)
             
         Returns:
-            str: The research plan with feedback request message
+            DeepResearchOutput: The research output with report, sources, learnings, and directions
         """
-        # Determine if this is an initial plan or an update
-        is_update = feedback and feedback.strip()
+        logger.info(f"Starting iterative research with max depth {depth} on topic: {topic}")
         
-        # Create the planning task with proper context formatting
-        planning_task = Task(
-            description=f"{'Update' if is_update else 'Create'} a comprehensive research plan for: {topic}",
-            expected_output="A detailed research plan in markdown format with clear sections for structure, methodology, and deliverables",
-            agent=self.planner,
-            context=None  # Task context must be List[Task] or None
-        )
+        # Initialize variables to track state across iterations
+        current_topic = topic
+        current_depth = 0
+        all_learnings = []
+        all_directions = []
+        prior_context = ""
         
-        # Execute planning phase
-        plan_crew = Crew(
-            agents=[self.planner],
-            tasks=[planning_task],
-            verbose=False
-        )
-        plan_output = plan_crew.kickoff()
-        plan = str(plan_output.raw)
+        # Store research results from all iterations
+        all_research_results = []
         
-        # Return plan with appropriate message, ensuring string type
-        action_word = "updated" if is_update else "created"
-        result = f"🤖 Research Planner has {action_word} the following plan. Please review and provide feedback:\n\n{plan}\n\nTo approve this plan, press Enter without typing anything.\nTo request changes, describe what should be modified."
-        return str(result)
-
-    def execute_research(self, topic: str, max_iterations: int = 3, queries_per_iteration: int = 2) -> str:
-        """
-        Execute iterative research process
-        
-        Args:
-            topic: The research topic
-            max_iterations: Maximum number of research iterations
-            queries_per_iteration: Number of search queries per iteration
+        # Main research loop - continue until we reach max depth or have no new directions
+        while current_depth < depth:
+            logger.info(f"Starting research iteration at depth {current_depth}/{depth} on topic: {current_topic}")
             
-        Returns:
-            str: The final research report
-        """
-        self.current_result = ""
-        accumulated_research = ""
-        
-        # Create research iteration tasks
-        iteration_tasks = []
-        for iteration in range(max_iterations):
-            iteration_tasks.append(Task(
-                description=f"Execute research iteration {iteration + 1} for topic: {topic}",
-                expected_output="Detailed research findings with citations and evidence",
-                agent=self.researcher,
-                context=None,
-                tools=[SerperDevTool(), FirecrawlScrapeWebsiteTool()]
-            ))
-
-        # Execute research iterations sequentially
-        for task in iteration_tasks:
-            research_crew = Crew(
-                agents=[self.researcher],
-                tasks=[task],
-                verbose=False
-            )
-            result = research_crew.kickoff()
-            # Use the loop index for iteration number (adding 1 since index starts at 0)
-            current_iteration = iteration_tasks.index(task) + 1
-            self.current_result += f"\n📚 Research Iteration {current_iteration}/{max_iterations}\n"
-            iteration_findings = str(result.raw)
-            accumulated_research += f"\n\nFindings from Iteration {iteration}:\n{iteration_findings}"
-            
-            # Generate and execute search queries using for_each
-            query_task = Task(
-                description=f"Generate {queries_per_iteration} focused search queries for: {topic}",
-                expected_output="List of specific, targeted search queries",
-                agent=self.researcher,
-                context=None  # Task context must be List[Task] or None
-            )
-            
-            query_crew = Crew(
-                agents=[self.researcher],
-                tasks=[query_task],
-                verbose=False
-            )
-            queries = str(query_crew.kickoff().raw).split('\n')
-            
-            # Create search tasks for each query
-            search_tasks = []
-            for i, query in enumerate(queries[:queries_per_iteration]):
-                self.current_result += f"\n🔍 Search Query {i + 1}: {query}\n"
-                
-                search_tasks.append(Task(
-                    description=f"Research and analyze: {query}",
-                    expected_output="Detailed analysis with source citations and key findings",
-                    agent=self.researcher,
-                    context=None,
-                    tools=[SerperDevTool(), FirecrawlScrapeWebsiteTool()]
-                ))
-
-            # Execute searches sequentially
-            for search_task in search_tasks:
-                search_crew = Crew(
-                    agents=[self.researcher],
-                    tasks=[search_task],
-                    verbose=False
-                )
-                result = search_crew.kickoff()
-                search_result = str(result.raw)
-                # Extract query from task description
-                query = search_task.description.replace("Research and analyze: ", "")
-                accumulated_research += f"\n\nFindings from Query: {query}\n{search_result}"
-            
-            # Create reflection inputs using class constant
-            reflection_inputs = [
-                {
-                    "aspect": aspect,
-                    "research": accumulated_research
-                }
-                for aspect in self.REFLECTION_ASPECTS
-            ]
-            
-            # Execute reflections sequentially
-            reflection_results = []
-            for reflection_input in reflection_inputs:
-                reflection_task = Task(
-                    description=f"Analyze research findings with focus on {reflection_input['aspect']}",
-                    expected_output="Detailed reflection analysis with insights and recommendations",
-                    agent=self.researcher,
-                    context=None
-                )
-                
-                reflection_crew = Crew(
-                    agents=[self.researcher],
-                    tasks=[reflection_task],
-                    verbose=False
-                )
-                result = reflection_crew.kickoff()
-                reflection_results.append(str(result.raw))
-            
-            # Combine reflection results
-            combined_reflection = "\n\n".join(reflection_results)
-            self.current_result += f"\n💭 Research Reflection:\n{combined_reflection}\n"
-            
-        # Phase 2: Section Writing and Grading
-        sections = []
-        section_topics = [
-            "Introduction and Background",
-            "Methodology and Approach",
-            "Findings and Analysis",
-            "Discussion and Implications",
-            "Conclusions and Recommendations"
-        ]
-        
-        for topic in section_topics:
-            # Create section writing task
-            writing_task = Task(
-                description=f"Write the {topic} section of the research paper",
-                expected_output="A well-structured, comprehensive section with proper citations and academic style",
-                agent=self.section_writer,
-                context=None
-            )
-            
-            # Execute section writing
-            writing_crew = Crew(
-                agents=[self.section_writer],
-                tasks=[writing_task],
-                verbose=False
-            )
-            section_content = str(writing_crew.kickoff().raw)
-            
-            # Grade the section
-            grading_task = Task(
-                description=f"Evaluate the quality of the {topic} section",
-                expected_output="Comprehensive evaluation with numerical grade and detailed feedback",
-                agent=self.section_grader,
-                context=None
-            )
-            
-            # Execute section grading
-            grading_crew = Crew(
-                agents=[self.section_grader],
-                tasks=[grading_task],
-                verbose=False
-            )
-            grade_result = str(grading_crew.kickoff().raw)
-            
-            # Add section info to list
-            sections.append({
-                "topic": topic,
-                "content": section_content,
-                "evaluation": grade_result
-            })
-            
-            # Update current result with progress
-            self.current_result += f"\n📝 Section: {topic}\n"
-            self.current_result += f"✍️ Content written\n"
-            self.current_result += f"📊 Evaluation completed\n"
-        
-        # Combine all sections into final research result
-        research_result = "\n\n".join([
-            f"=== {section['topic']} ===\n"
-            f"{section['content']}\n\n"
-            f"--- Section Evaluation ---\n"
-            f"{section['evaluation']}"
-            for section in sections
-        ])
-        
-        # Phase 3: Final Review using class constant
-        # Create review inputs for parallel processing
-        review_inputs = [
-            {
-                "aspect": aspect["name"],
-                "focus": aspect["focus"],
-                "content": research_result
+            # Prepare inputs for the research
+            research_inputs = {
+                "topic": current_topic,
+                "depth": depth,
+                "breadth": breadth,
+                "prior_context": prior_context,
+                "prior_learnings": all_learnings,
+                "prior_directions": all_directions,
+                "iteration": 1,
+                "total_iterations": breadth
             }
-            for aspect in self.REVIEW_ASPECTS
-        ]
-
-        # Execute reviews sequentially
-        final_review = []
-        for review_input in review_inputs:
-            review_task = Task(
-                description=f"Review research content focusing on {review_input['aspect']}\nFocus areas:\n{review_input['focus']}",
-                expected_output="Comprehensive review with analysis, recommendations, and implemented improvements",
-                agent=self.reviewer,
-                context=None
+            
+            # 1. Run the planner
+            planner_crew = Crew(
+                agents=[self.research_planner()],
+                tasks=[self.deep_research_plan()],
+                process=Process.sequential,
+                verbose=True,
+                step_callback=step_callback,
+                memory=True,
             )
             
-            review_crew = Crew(
-                agents=[self.reviewer],
-                tasks=[review_task],
-                verbose=False
+            logger.info(f"Starting planning phase for depth {current_depth}")
+            plan_result = await planner_crew.kickoff_async(inputs=research_inputs)
+            
+            # Update inputs with plan result
+            if hasattr(plan_result, "raw_output"):
+                research_inputs["research_plan"] = plan_result.raw_output
+            elif isinstance(plan_result, dict):
+                research_inputs["research_plan"] = plan_result.get("content", "")
+            
+            # 2. Run the expert researcher with breadth iterations
+            logger.info(f"Starting research phase with {breadth} breadth iterations")
+            research_task = self.deep_research_task()
+            researcher_agent = self.expert_researcher()
+            
+            combined_research_results = []
+            for i in range(breadth):
+                logger.info(f"Research breadth iteration {i+1}/{breadth}")
+                
+                # Update inputs with iteration information
+                iteration_inputs = research_inputs.copy()
+                iteration_inputs["iteration"] = i + 1
+                iteration_inputs["total_iterations"] = breadth
+                
+                # Add previous research results to context if available
+                if combined_research_results:
+                    iteration_inputs["previous_research"] = "\n\n".join(combined_research_results)
+                
+                researcher_crew = Crew(
+                    agents=[researcher_agent],
+                    tasks=[research_task],
+                    process=Process.sequential,
+                    verbose=True,
+                    step_callback=step_callback,
+                    memory=True,
+                )
+                
+                research_result = await researcher_crew.kickoff_async(inputs=iteration_inputs)
+                
+                # Extract and store the research result
+                if hasattr(research_result, "raw_output"):
+                    combined_research_results.append(research_result.raw_output)
+                elif isinstance(research_result, dict):
+                    combined_research_results.append(research_result.get("content", ""))
+            
+            # Add this iteration's research results to the overall collection
+            all_research_results.extend(combined_research_results)
+            
+            # 3. Extract learnings and directions
+            logger.info("Extracting learnings and directions from research results")
+            extraction_inputs = {
+                "topic": current_topic,
+                "research_results": "\n\n".join(combined_research_results),
+                "prior_learnings": all_learnings,
+                "prior_directions": all_directions
+            }
+            
+            extraction_crew = Crew(
+                agents=[self.research_analyst()],
+                tasks=[self.extract_learnings_directions_task()],
+                process=Process.sequential,
+                verbose=True,
+                step_callback=step_callback,
+                memory=True,
             )
-            result = review_crew.kickoff()
-            review_content = str(result.raw)
-            final_review.append(f"=== {review_input['aspect']} ===\n{review_content}")
-
-        # Return the final synthesized review as string
-        result = "\n\n".join(final_review)
-        return str(result) if result is not None else ""
-
-    def research(self, topic: str, feedback: Optional[str] = None) -> str:
-        """
-        Main research method that coordinates planning and execution
+            
+            extraction_result = await extraction_crew.kickoff_async(inputs=extraction_inputs)
+            
+            # Parse the extraction result
+            new_learnings = []
+            new_directions = []
+            
+            if hasattr(extraction_result, "raw_output"):
+                try:
+                    import json
+                    result_dict = json.loads(extraction_result.raw_output)
+                    new_learnings = result_dict.get("learnings", [])
+                    new_directions = result_dict.get("directions", [])
+                except:
+                    logger.warning("Failed to parse extraction result as JSON, using raw output")
+                    new_learnings = ["Failed to extract structured learnings"]
+                    new_directions = ["Failed to extract structured directions"]
+            elif isinstance(extraction_result, dict):
+                new_learnings = extraction_result.get("learnings", [])
+                new_directions = extraction_result.get("directions", [])
+            
+            # Add new learnings and directions to our collections
+            all_learnings.extend(new_learnings)
+            all_directions.extend(new_directions)
+            
+            # Increment depth counter
+            current_depth += 1
+            
+            # Check if we should continue to the next depth level
+            if current_depth < depth and new_directions:
+                # Select the next direction to explore
+                next_direction = new_directions[0]
+                logger.info(f"Moving to depth {current_depth} with direction: {next_direction}")
+                
+                # Update the topic for the next iteration
+                current_topic = next_direction
+                
+                # Create context from current research
+                prior_context = f"""
+                Previous Research Topic: {current_topic}
+                
+                Key Learnings:
+                {chr(10).join([f'- {learning}' for learning in new_learnings])}
+                
+                New Research Direction:
+                {next_direction}
+                """
+            else:
+                # No new directions or reached max depth, break the loop
+                logger.info(f"Stopping at depth {current_depth}: {'reached max depth' if current_depth >= depth else 'no new directions'}")
+                break
         
-        Args:
-            topic: The research topic
-            feedback: Optional feedback from previous iteration
-            
-        Returns:
-            str: Either a research plan or the final research report
+        # Generate the final report
+        logger.info(f"Generating final report after {current_depth} depth iterations")
+        
+        # Prepare inputs for the final report
+        final_inputs = {
+            "topic": topic,  # Use the original topic for the report
+            "depth": depth,
+            "breadth": breadth,
+            "research_results": "\n\n".join(all_research_results),
+            "learnings": all_learnings,
+            "directions": all_directions
+        }
+        
+        final_crew = Crew(
+            agents=[
+                self.research_writer(),
+                self.research_reviewer(),
+            ],
+            tasks=[
+                self.deep_writing_task(),
+                self.deep_review_task(),
+            ],
+            process=Process.sequential,
+            verbose=True,
+            step_callback=step_callback,
+            memory=True,
+        )
+        
+        final_result = await final_crew.kickoff_async(inputs=final_inputs)
+        
+        # Convert the result to DeepResearchOutput and add learnings/directions
+        output = DeepResearchOutput.from_crew_output(final_result)
+        output.learnings = all_learnings
+        output.directions = all_directions
+        
+        return output
+
+    @crew
+    async def research_crew_async(self, **inputs) -> DeepResearchOutput:
         """
-        if feedback is None:
-            # Initial planning phase
-            result = self.create_research_plan(topic)
-        elif feedback.strip():
-            # Update plan based on feedback
-            result = self.create_research_plan(topic, feedback)
-        else:
-            # Execute research when plan is approved (empty feedback)
-            result = self.execute_research(topic)
-        # Ensure we always return a string
-        return str(result) if result is not None else ""
+        Execute the full research process with the crew using CrewAI's standard crew pattern.
+        Args:
+            **inputs: Dictionary of inputs including topic, depth, outline, etc.
+            research_iterations: Optional number of iterations for the researcher (default: 1, max: 10)
+        Returns:
+            DeepResearchOutput: The research output with report and sources
+        """
+        # Get the number of research iterations (default: 1, max: 10)
+        research_iterations = min(inputs.get("research_iterations", 5), 15)
+        logger.info(f"Running research with {research_iterations} iterations for the expert researcher")
+        
+        # Store intermediate results
+        intermediate_results = {}
+        
+        # 1. Run the planner
+        planner_crew = Crew(
+            agents=[self.research_planner()],
+            tasks=[self.deep_research_plan()],
+            process=Process.sequential,
+            verbose=True,
+            step_callback=step_callback,
+            memory=True,
+        )
+        
+        logger.info("Starting planning phase...")
+        plan_result = await planner_crew.kickoff_async(inputs=inputs)
+        intermediate_results["plan"] = plan_result
+        
+        # Update inputs with plan result
+        research_inputs = inputs.copy()
+        if hasattr(plan_result, "raw_output"):
+            research_inputs["research_plan"] = plan_result.raw_output
+        elif isinstance(plan_result, dict):
+            research_inputs["research_plan"] = plan_result.get("content", "")
+        
+        # 2. Run the expert researcher with iterations
+        logger.info(f"Starting research phase with {research_iterations} iterations...")
+        research_task = self.deep_research_task()
+        researcher_agent = self.expert_researcher()
+        
+        combined_research_results = []
+        for i in range(research_iterations):
+            logger.info(f"Research iteration {i+1}/{research_iterations}")
+            
+            # Update inputs with iteration information
+            iteration_inputs = research_inputs.copy()
+            iteration_inputs["iteration"] = i + 1
+            iteration_inputs["total_iterations"] = research_iterations
+            
+            # Add previous research results to context if available
+            if combined_research_results:
+                iteration_inputs["previous_research"] = "\n\n".join(combined_research_results)
+            
+            researcher_crew = Crew(
+                agents=[researcher_agent],
+                tasks=[research_task],
+                verbose=True,
+                step_callback=step_callback,
+                memory=True,
+            )
+            
+            research_result = await researcher_crew.kickoff_async(inputs=iteration_inputs)
+            
+            # Extract and store the research result
+            if hasattr(research_result, "raw_output"):
+                combined_research_results.append(research_result.raw_output)
+            elif isinstance(research_result, dict):
+                combined_research_results.append(research_result.get("content", ""))
+        
+        intermediate_results["research"] = combined_research_results
+        
+        # 3. Run the rest of the crew (analysis, writing, review)
+        logger.info("Starting analysis, writing, and review phases...")
+        
+        # Update inputs with combined research results
+        final_inputs = inputs.copy()
+        if hasattr(plan_result, "raw_output"):
+            final_inputs["research_plan"] = plan_result.raw_output
+        elif isinstance(plan_result, dict):
+            final_inputs["research_plan"] = plan_result.get("content", "")
+            
+        final_inputs["research_results"] = "\n\n".join(combined_research_results)
+        
+        final_crew = Crew(
+            agents=[
+                self.research_writer(),
+                self.research_reviewer(),
+            ],
+            tasks=[
+                self.deep_writing_task(),
+                self.deep_review_task(),
+            ],
+            process=Process.sequential,
+            verbose=True,
+            step_callback=step_callback,
+            memory=True,
+        )
+        
+        final_result = await final_crew.kickoff_async(inputs=final_inputs)
+        
+        # Convert the result to DeepResearchOutput
+        return DeepResearchOutput.from_crew_output(final_result)
+
+    @crew
+    async def crew(
+        self,
+        progress_callback: Optional[Callable] = None,
+        topic: str = "",
+        depth: Optional[int] = 2,
+        breadth: Optional[int] = 2,
+        research_iterations: Optional[int] = 1,
+    ) -> DeepResearchOutput:
+        """
+        Execute the full research process with the crew.
+        This method maintains backward compatibility with the original implementation
+        while leveraging the new CrewAI structure.
+        Args:
+            progress_callback: Callback function for tracking progress
+            topic: The research topic or question
+            depth: The depth of research (1-5)
+            breadth: The breadth of research at each depth (1-5)
+            research_iterations: Number of iterations for the researcher (default: 1, max: 10)
+            outline: Optional outline sections
+            research_plan: Optional research plan (if already generated)
+            feedback_provider: Optional function to get feedback for a specific iteration and stage
+            plan_feedback: Optional feedback on the research plan
+        Returns:
+            DeepResearchOutput: The research output with report and sources
+        """
+        logger.info(f"Starting deep research process on topic: {topic}")
+
+        # Set up a custom step callback that will also call the progress_callback if provided
+        if progress_callback:
+            global step_callback
+            original_step_callback = step_callback
+
+            def combined_callback(step):
+                # Call the original step callback
+                if original_step_callback:
+                    original_step_callback(step)
+
+                # Call the progress callback
+                progress_callback(step)
+
+            # Override the step callback
+            step_callback = combined_callback
+
+        try:
+            # Use the iterative research crew for depth-based research
+            if depth > 1:
+                logger.info(f"Using iterative research with depth {depth} and breadth {breadth}")
+                result = await self.iterative_research_crew(
+                    topic=topic,
+                    depth=depth,
+                    breadth=breadth,
+                )
+                return result
+            else:
+                # For depth=1, use the standard research crew
+                logger.info(f"Using standard research with {research_iterations} iterations")
+                inputs = {
+                    "topic": topic,
+                    "depth": 1,
+                    "breadth": breadth,
+                    "research_iterations": min(research_iterations, 10),
+                    "iteration": 1,
+                    "total_iterations": 1
+                }
+                result = await self.research_crew_async(**inputs)
+                return result
+        except Exception as e:
+            logger.error(f"Critical error in deep research process: {str(e)}")
+            # Return a minimal output in case of critical failure
+            return DeepResearchOutput(
+                name=f"Research Report (Error): {topic}",
+                content=f"An error occurred during the research process: {str(e)}",
+                sources=[]
+            )
