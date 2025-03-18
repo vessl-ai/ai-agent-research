@@ -1,0 +1,31 @@
+sitemap_extraction_task:
+  description: >
+    Discover and extract URLs from the website at {base_url}. First look for a sitemap, then fall back to other methods if needed.
+  expected_output: >
+    A list of URLs from the website that can be crawled for information, and the give user prompt.
+  agent: sitemap_agent
+
+keyword_filtering_task:
+  description: >
+    Filter the discovered URLs to find those most relevant to the user prompt: "{user_prompt}". 
+    Analyze the prompt for keywords and match them against the URLs.
+  expected_output: >
+    A filtered list of the most relevant URLs to crawl based on the user's requirements.
+  agent: keyword_filter_agent
+
+content_extraction_task:
+  description: >
+    Crawl the filtered URLs and extract information according to the user's prompt: "{user_prompt}". 
+    The information should be extracted in a structured format.
+  expected_output: >
+    Structured data extracted from each URL containing the information requested by the user.
+  agent: content_crawler_agent
+
+format_results_task:
+  description: >
+    Format the extracted information into a well-structured markdown document. 
+    The document should present the information in a clear, organized way that addresses the user's prompt: "{user_prompt}".
+  expected_output: >
+    A markdown document that presents the extracted information in a well-organized format, 
+    with clear headings, bullet points, and formatting as appropriate.
+  agent: formatter_agent
