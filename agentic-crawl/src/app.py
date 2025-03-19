@@ -12,7 +12,7 @@ import os
 from dotenv import load_dotenv
 
 # Import the crawler crew
-from crew_handler import CrawlCrewHandler
+from crawl_agent import CrawlCrew, CrawlOutput
 
 # Load environment variables
 load_dotenv()
@@ -75,9 +75,6 @@ class LogCapture(logging.Handler):
     def clear(self):
         self.logs = []
 
-# Initialize the crawler handler
-crawler_handler = CrawlCrewHandler()
-
 @app.get("/")
 async def read_root():
     """Serve the main interface"""
@@ -100,18 +97,22 @@ async def start_crawl(request: CrawlRequest):
         
         # Define a progress callback function
         def progress_callback(step):
-            logger.info(f"Progress update: {step}")
+            message = f"Progress update: {step}"
+            logger.info(message)
+            log_capture.logs.append(message)
         
         # Get model from request or environment
         model_name = request.model or os.getenv("GEMINI_MODEL_NAME", "gemini-2.0-flash")
         
+        # Create the crawler instance
+        crawler = CrawlCrew(model_name=model_name)
+        
         # Start the crawl
-        result = await crawler_handler.crawl(
+        result = await crawler.crawl(
             base_url=request.url,
             user_prompt=request.prompt,
             max_sitemap_urls=request.max_sitemap_urls,
             max_crawl_urls=request.max_crawl_urls,
-            model_name=model_name,
             progress_callback=progress_callback
         )
         

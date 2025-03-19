@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """
 Run script for the Agentic Crawl API.
-This script starts the FastAPI server for the web crawling application.
+This script starts the FastAPI server for the Agentic Crawl application.
 """
 
 import os
