@@ -1,6 +1,6 @@
 from crewai import Agent, Crew, Process, Task, LLM
 from dotenv import load_dotenv
-from tools.custom_tool import SitemapTool, WebCrawlerTool, KeywordFilterTool
+from tools.custom_tool import SitemapTool, WebCrawlerTool
 import yaml
 import json
 import logging
