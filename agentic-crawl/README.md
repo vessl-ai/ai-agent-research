@@ -81,3 +81,45 @@ The system maintains the user's prompt across all tasks and processes URLs in ma
 - For very large websites, you may need to target specific sections rather than the entire domain.
 - If you encounter any issues with the batch processing, you can enable debug mode to see more detailed logs.
 - Adjust the batch size in the code if needed (default batch size: 2 URLs per batch)
+
+## FastAPI Integration
+
+The project has been refactored to use FastAPI, providing a web interface and API endpoints for the crawler functionality.
+
+### Running the FastAPI server
+
+1. Install the required dependencies:
+   ```
+   pip install -r requirements.txt
+   ```
+
+2. Run the server:
+   ```
+   python -m src.run
+   ```
+
+3. Open your browser and navigate to http://localhost:5000 to access the web interface.
+
+### API Endpoints
+
+- `GET /`: Web interface for the crawler
+- `POST /start_crawl`: Start a new crawl session
+  - Request body:
+    ```json
+    {
+      "url": "https://example.com",
+      "prompt": "Information to look for",
+      "max_sitemap_urls": 50,
+      "max_crawl_urls": 5,
+      "model": "gemini-2.0-flash" // Optional
+    }
+    ```
+- `GET /crawl/{crawl_id}`: Get results of a specific crawl session
+
+### Command Line Usage
+
+The original command line functionality is still available:
+
+```
+python main.py --url https://example.com --prompt "What information to look for"
+```

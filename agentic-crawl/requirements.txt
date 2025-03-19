@@ -3,3 +3,10 @@ crewai-tools
 litellm
 google-generativeai
 crawl4ai
+fastapi
+uvicorn
+python-dotenv
+beautifulsoup4
+requests
+pydantic
+aiofiles
